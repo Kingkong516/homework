@@ -1,0 +1,2 @@
+Problem 5:
+python train_pg_f18.py InvertedPendulum-v1 -ep 1000 --discount 0.99 -n 100 -l 2 -s 64 -b 1000 -lr 6e-3 -rtg --seed 1

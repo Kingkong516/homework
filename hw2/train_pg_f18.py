@@ -11,6 +11,7 @@ import os
 import time
 import inspect
 from multiprocessing import Process
+from functools import reduce
 
 #============================================================================================#
 # Utilities
@@ -80,7 +81,8 @@ class Agent(object):
         self.reward_to_go = estimate_return_args['reward_to_go']
         self.nn_baseline = estimate_return_args['nn_baseline']
         self.normalize_advantages = estimate_return_args['normalize_advantages']
-
+        self.actor_critic = estimate_return_args['actor_critic']
+        
     def init_tf_sess(self):
         tf_config = tf.ConfigProto(inter_op_parallelism_threads=1, intra_op_parallelism_threads=1) 
         self.sess = tf.Session(config=tf_config)
@@ -186,8 +188,8 @@ class Agent(object):
         else:
             sy_mean, sy_logstd = policy_parameters
             # YOUR_CODE_HERE
-            rnorm = tf.random.normal(shape=[tf.shape(sy_mean)[0],self.ac_dim])
-            sy_sampled_ac = tf.multiply(tf.add(rnorm,sy_mean),1/tf.exp(sy_logstd))
+            rnorm = tf.random_normal(shape=[tf.shape(sy_mean)[0],self.ac_dim])
+            sy_sampled_ac = tf.add(tf.multiply(rnorm,1/tf.exp(sy_logstd)),sy_mean)
             
         return sy_sampled_ac
 
@@ -278,17 +280,16 @@ class Agent(object):
         # Define placeholders for targets, a loss function and an update op for fitting a 
         # neural network baseline. These will be used to fit the neural network baseline. 
         #========================================================================================#
-        if self.nn_baseline:
-            raise NotImplementedError
+        if self.nn_baseline or self.actor_critic:
             self.baseline_prediction = tf.squeeze(build_mlp(
-                                    self.sy_ob_no, 
-                                    1, 
-                                    "nn_baseline",
-                                    n_layers=self.n_layers,
-                                    size=self.size))
+                                        self.sy_ob_no, 
+                                        1, 
+                                        "nn_baseline",
+                                        n_layers=self.n_layers,
+                                        size=self.size))
             # YOUR_CODE_HERE
-            self.sy_target_n = None
-            baseline_loss = None
+            self.sy_target_n = tf.placeholder(shape = [None], dtype = tf.float32)
+            baseline_loss = tf.losses.mean_squared_error(self.sy_target_n, self.baseline_prediction)
             self.baseline_update_op = tf.train.AdamOptimizer(self.learning_rate).minimize(baseline_loss)
 
     def sample_trajectories(self, itr, env):
@@ -315,11 +316,14 @@ class Agent(object):
             obs.append(ob)
             #====================================================================================#
             #                           ----------PROBLEM 3----------
-            #====================================================================================#            
-            ac = self.sess.run(self.sy_sampled_ac, feed_dict = {self.sy_ob_no: ob.reshape(1,-1)})
-            ac = ac[0]
-            if len(ac) == 1:
+            #====================================================================================# 
+            while True:
+                ac = self.sess.run(self.sy_sampled_ac, feed_dict = {self.sy_ob_no: ob.reshape(1,-1)})
                 ac = ac[0]
+                if self.discrete:
+                    ac = ac[0]
+                if env.action_space.contains(ac):
+                    break
             acs.append(ac)
             ob, rew, done, _ = env.step(ac)
             rewards.append(rew)
@@ -401,6 +405,9 @@ class Agent(object):
             like the 'ob_no' and 'ac_na' above. 
         """
         # YOUR_CODE_HERE
+        if self.actor_critic:
+            return re_n
+        
         max_length = max([len(r) for r in re_n])
         gammas = self.gamma**np.arange(max_length)
         discounted_rwds = [r*gammas[:len(r)] for r in re_n]
@@ -431,7 +438,15 @@ class Agent(object):
         #                           ----------PROBLEM 6----------
         # Computing Baselines
         #====================================================================================#
-        if self.nn_baseline:
+        if self.actor_critic:
+            v_n = self.sess.run(self.baseline_prediction,feed_dict = {self.sy_ob_no: ob_no})
+            self.t_n = np.concatenate(q_n)\
+                       + np.concatenate([self.gamma*v_n[1:],np.zeros(1)])
+            adv_n = self.t_n-v_n
+            idx = np.array([len(i) for i in q_n]).cumsum()-1
+            adv_n[idx] = 0
+            self.t_n[idx] = v_n[idx]
+        elif self.nn_baseline:
             # If nn_baseline is True, use your neural network to predict reward-to-go
             # at each timestep for each trajectory, and save the result in a variable 'b_n'
             # like 'ob_no', 'ac_na', and 'q_n'.
@@ -439,8 +454,8 @@ class Agent(object):
             # Hint #bl1: rescale the output from the nn_baseline to match the statistics
             # (mean and std) of the current batch of Q-values. (Goes with Hint
             # #bl2 in Agent.update_parameters.
-            raise NotImplementedError
-            b_n = None # YOUR CODE HERE
+            b_n = self.sess.run(self.baseline_prediction,feed_dict = {self.sy_ob_no: ob_no})
+            b_n = ((b_n-b_n.mean())/b_n.std())*q_n.std()+q_n.mean() # why is this scale?
             adv_n = q_n - b_n
         else:
             adv_n = q_n.copy()
@@ -471,7 +486,7 @@ class Agent(object):
         #                           ----------PROBLEM 3----------
         # Advantage Normalization
         #====================================================================================#
-        if self.normalize_advantages:
+        if self.normalize_advantages and not self.actor_critic:
             # On the next line, implement a trick which is known empirically to reduce variance
             # in policy gradient methods: normalize adv_n to have mean zero and std=1.
             adv_n = (adv_n-adv_n.mean())/adv_n.std()
@@ -498,7 +513,9 @@ class Agent(object):
         #                           ----------PROBLEM 6----------
         # Optimizing Neural Network Baseline
         #====================================================================================#
-        if self.nn_baseline:
+        if self.actor_critic:
+            self.sess.run(self.baseline_update_op,feed_dict = {self.sy_ob_no: ob_no, self.sy_target_n: self.t_n})
+        elif self.nn_baseline:
             # If a neural network baseline is used, set up the targets and the inputs for the 
             # baseline. 
             # 
@@ -510,8 +527,8 @@ class Agent(object):
             # Agent.compute_advantage.)
 
             # YOUR_CODE_HERE
-            raise NotImplementedError
-            target_n = None 
+            target_n = (q_n-q_n.mean())/q_n.std()
+            self.sess.run(self.baseline_update_op,feed_dict = {self.sy_ob_no: ob_no, self.sy_target_n: target_n})
 
         #====================================================================================#
         #                           ----------PROBLEM 3----------
@@ -544,7 +561,8 @@ def train_PG(
         nn_baseline, 
         seed,
         n_layers,
-        size):
+        size,
+        ac):
 
     start = time.time()
 
@@ -598,6 +616,7 @@ def train_PG(
         'reward_to_go': reward_to_go,
         'nn_baseline': nn_baseline,
         'normalize_advantages': normalize_advantages,
+        'actor_critic':ac
     }
 
     agent = Agent(computation_graph_args, sample_trajectory_args, estimate_return_args)
@@ -622,6 +641,10 @@ def train_PG(
         # across paths
         ob_no = np.concatenate([path["observation"] for path in paths])
         ac_na = np.concatenate([path["action"] for path in paths])
+        if discrete:
+            ac_na = ac_na.flatten()
+        else:            
+            ac_na = ac_na.reshape([-1,ac_dim])
         re_n = [path["reward"] for path in paths]
 
         q_n, adv_n = agent.estimate_return(ob_no, re_n)
@@ -662,6 +685,7 @@ def main():
     parser.add_argument('--n_experiments', '-e', type=int, default=1)
     parser.add_argument('--n_layers', '-l', type=int, default=2)
     parser.add_argument('--size', '-s', type=int, default=64)
+    parser.add_argument('--actor_critic','-ac',action='store_true')
     args = parser.parse_args()
 
     if not(os.path.exists('data')):
@@ -695,7 +719,8 @@ def main():
                 nn_baseline=args.nn_baseline, 
                 seed=seed,
                 n_layers=args.n_layers,
-                size=args.size
+                size=args.size,
+                ac = args.actor_critic
                 )
         # # Awkward hacky process runs, because Tensorflow does not like
         # # repeatedly calling train_PG in the same thread.
