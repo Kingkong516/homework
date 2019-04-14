@@ -23,7 +23,7 @@ class QLearner(object):
     session,
     exploration=LinearSchedule(1000000, 0.1),
     stopping_criterion=None,
-    replay_buffer_size=1000000,
+    replay_buffer_size=1000000, 
     batch_size=32,
     gamma=0.99,
     learning_starts=50000,
@@ -130,7 +130,9 @@ class QLearner(object):
     # episode, only the current state reward contributes to the target, not the
     # next state Q-value (i.e. target is just rew_t_ph, not rew_t_ph + gamma * q_tp1)
     self.done_mask_ph          = tf.placeholder(tf.float32, [None])
-
+    
+    
+    
     # casting to float on GPU ensures lower data transfer times.
     if lander:
       obs_t_float = self.obs_t_ph
@@ -159,6 +161,20 @@ class QLearner(object):
     ######
 
     # YOUR CODE HERE
+    self.q = q_func(obs_t_float, self.num_actions, 'q_func', reuse = False)
+    self.target_q = q_func(obs_tp1_float, self.num_actions, 'target_q_func', reuse = False)
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
+    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='target_q_func')
+
+    y = self.rew_t_ph+gamma*(tf.reduce_max(self.target_q,axis = 1)*(1-self.done_mask_ph))
+    
+    # option 1
+    selector = tf.stack([tf.range(tf.shape(y)[0]),self.act_t_ph],axis=1)
+    self.total_error = tf.reduce_sum(huber_loss(tf.gather_nd(self.q, selector)-y))
+    
+    #option 2
+    #learn_q_func_values= tf.reduce_sum(self.q*tf.one_hot(self.act_t_ph,depth=self.num_actions),axis=1)
+    #self.total_error = tf.losses.mean_squared_error(y,learn_q_func_values)
 
     ######
 
@@ -166,7 +182,7 @@ class QLearner(object):
     self.learning_rate = tf.placeholder(tf.float32, (), name="learning_rate")
     optimizer = self.optimizer_spec.constructor(learning_rate=self.learning_rate, **self.optimizer_spec.kwargs)
     self.train_fn = minimize_and_clip(optimizer, self.total_error,
-                 var_list=q_func_vars, clip_val=grad_norm_clipping)
+                    var_list=q_func_vars, clip_val=grad_norm_clipping)
 
     # update_target_fn will be called periodically to copy Q network to target Q network
     update_target_fn = []
@@ -229,7 +245,20 @@ class QLearner(object):
     #####
 
     # YOUR CODE HERE
+    idx = self.replay_buffer.store_frame(self.last_obs)
+    if (not self.model_initialized) or np.random.uniform() < self.exploration.value(self.t):
+        action = self.env.action_space.sample()
+    else:
+        encoded_last_obs = self.replay_buffer.encode_recent_observation()
+        q_output = self.session.run(self.q, feed_dict = {self.obs_t_ph: encoded_last_obs[np.newaxis,:]})
+        action = np.argmax(q_output, axis = 1)[0]
+    obs, reward, done, info = self.env.step(action)
+    self.replay_buffer.store_effect(idx, action, reward, done)
+    if done:
+        obs = self.env.reset()
+    self.last_obs = obs
 
+    
   def update_model(self):
     ### 3. Perform experience replay and train the network.
     # note that this is only done if the replay buffer contains enough samples
@@ -274,9 +303,19 @@ class QLearner(object):
       #####
 
       # YOUR CODE HERE
-
-      self.num_param_updates += 1
-
+      obs, act, rew, next_obs, done_mask =  self.replay_buffer.sample(self.batch_size)
+      if not self.model_initialized:
+          initialize_interdependent_variables(self.session, tf.global_variables(),
+                                              {self.obs_t_ph: obs, self.obs_tp1_ph: next_obs})
+          self.model_initialized = True
+      self.session.run([self.train_fn, self.total_error], feed_dict = {self.obs_t_ph: obs,
+                       self.act_t_ph: act, self.rew_t_ph: rew, self.obs_tp1_ph: next_obs,
+                       self.done_mask_ph: done_mask, 
+                       self.learning_rate: self.optimizer_spec.lr_schedule.value(self.t)})
+    
+      if self.t % self.target_update_freq == 0:    
+          self.session.run(self.update_target_fn)                                      
+          self.num_param_updates += 1
     self.t += 1
 
   def log_progress(self):

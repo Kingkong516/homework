@@ -84,8 +84,14 @@ class ModelBasedRL(object):
 
         losses = []
         ### PROBLEM 1
+        n_iter = 0
+        for i, (states, actions, next_states, _, _) in enumerate(self._random_dataset.random_iterator(self._training_batch_size)):
+            loss = self._policy.train_step(states, actions, next_states)
+            losses.append(loss)
+            n_iter+=1
+            if n_iter >= self._training_epochs:
+                break
         ### YOUR CODE HERE
-        raise NotImplementedError
 
         logger.record_tabular('TrainingLossStart', losses[0])
         logger.record_tabular('TrainingLossFinal', losses[-1])
@@ -115,17 +121,19 @@ class ModelBasedRL(object):
                   predicted states and saves these to the experiment's folder. You do not need to modify this code.
         """
         logger.info('Training policy....')
+        
         ### PROBLEM 1
+        self._train_policy(self._random_dataset)
         ### YOUR CODE HERE
-        raise NotImplementedError
 
         logger.info('Evaluating predictions...')
         for r_num, (states, actions, _, _, _) in enumerate(self._random_dataset.rollout_iterator()):
             pred_states = []
 
             ### PROBLEM 1
+            for i in range(len(states)):
+                pred_states.append(self._policy.predict(np.asarray(states[i]),np.asarray(actions[i])))
             ### YOUR CODE HERE
-            raise NotImplementedError
 
             states = np.asarray(states)
             pred_states = np.asarray(pred_states)
@@ -153,14 +161,15 @@ class ModelBasedRL(object):
         self._log(self._random_dataset)
 
         logger.info('Training policy....')
+        
         ### PROBLEM 2
+        self._train_policy(self._random_dataset)
         ### YOUR CODE HERE
-        raise NotImplementedError
 
         logger.info('Evaluating policy...')
         ### PROBLEM 2
+        eval_dataset = self._gather_rollouts(self._policy, self._num_onpolicy_rollouts)
         ### YOUR CODE HERE
-        raise NotImplementedError
 
         logger.info('Trained policy')
         self._log(eval_dataset)
@@ -184,16 +193,16 @@ class ModelBasedRL(object):
             ### PROBLEM 3
             ### YOUR CODE HERE
             logger.info('Training policy...')
-            raise NotImplementedError
+            self._train_policy(self._random_dataset)
 
             ### PROBLEM 3
             ### YOUR CODE HERE
             logger.info('Gathering rollouts...')
-            raise NotImplementedError
+            new_dataset = self._gather_rollouts(self._policy, self._num_onpolicy_rollouts)
 
             ### PROBLEM 3
             ### YOUR CODE HERE
             logger.info('Appending dataset...')
-            raise NotImplementedError
+            self._random_dataset.append(new_dataset)
 
             self._log(new_dataset)
