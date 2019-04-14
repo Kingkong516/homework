@@ -2,7 +2,7 @@ import os
 import argparse
 import time
 
-os.chdir(r'C:\Users\s6532600.SCGLOBAL\Desktop\learning\code\homework-master\homework-master\hw4')
+os.chdir(r'/home/yilei/project/homework/hw4')
 
 from half_cheetah_env import HalfCheetahEnv
 from logger import logger

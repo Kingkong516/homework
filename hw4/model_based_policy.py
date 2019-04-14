@@ -73,7 +73,7 @@ class ModelBasedPolicy(object):
         input_ph = tf.concat([utils.normalize(state,state_mean,state_std),
                               utils.normalize(action,action_mean,action_std)],axis=1)
         output_layer = utils.build_mlp(input_ph, output_dim=self._state_dim,
-                                       scope='dynamics_func',n_layer=self._nn_layers,reuse=reuse)
+                                       scope='dynamics_func',n_layers=self._nn_layers,reuse=reuse)
         
         delta_mean = tf.constant(self._init_dataset.delta_state_mean,dtype=tf.float32)
         delta_std = tf.constant(self._init_dataset.delta_state_std,dtype=tf.float32)
@@ -135,15 +135,17 @@ class ModelBasedPolicy(object):
 
         """
         ### PROBLEM 2
-        states = tf.tile(state_ph,self._num_random_action_selection)
+        states = tf.tile(state_ph,[self._num_random_action_selection,1])
         cost = tf.zeros(shape=(self._num_random_action_selection,),dtype=tf.float32)
         for i in range(self._horizon):
-            action_sample = tf.constant(np.random.uniform(self.env.action_space.low, self.env.action_space.high,self._num_random_action_selection),dtype=tf.float32)
+            action_sample = tf.stack([tf.random_uniform((self._num_random_action_selection,),self._action_space_low[j], self._action_space_high[j])
+                                      for j in range(self._action_dim)],axis = 1)
             if i==0:
-                action_init = action_sample
+                action_init = action_sample   
             next_states = self._dynamics_func(states, action_sample, reuse=True)
-            cost += self.cost_fn(states, action_sample, next_states)
-        best_action = action_init[tf.math.argmin(cost)]
+            cost += self._cost_fn(states, action_sample, next_states)
+            states = next_states
+        best_action = action_init[tf.argmin(cost),:]
         ### YOUR CODE HERE
 
         return best_action
@@ -199,7 +201,8 @@ class ModelBasedPolicy(object):
         assert np.shape(action) == (self._action_dim,)
 
         ### PROBLEM 1
-        next_state_pred = self._sess.run([self._next_state_pred],feed_dict={self._state_ph:state,self._action_ph:action})
+        next_state_pred = self._sess.run(self._next_state_pred,feed_dict={self._state_ph:state.reshape(-1,self._state_dim),self._action_ph:action.reshape(-1,self._action_dim)})
+        next_state_pred = next_state_pred.reshape(self._state_dim,)
         ### YOUR CODE HERE
 
         assert np.shape(next_state_pred) == (self._state_dim,)
@@ -215,7 +218,7 @@ class ModelBasedPolicy(object):
         assert np.shape(state) == (self._state_dim,)
 
         ### PROBLEM 2
-        best_action = self._sess.run(self._best_action, feed_dict = {self._state_ph: state})
+        best_action = self._sess.run(self._best_action, feed_dict = {self._state_ph: state.reshape(1,-1)})
         ### YOUR CODE HERE
 
         assert np.shape(best_action) == (self._action_dim,)
